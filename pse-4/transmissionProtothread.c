@@ -1,139 +1,112 @@
-/**
- * @file transmissionProtothread.c
- * @brief Implementação de uma Máquina de Estados Finitos (FSM) para decodificação de um protocolo de comunicação.
- * 
- * O protocolo de comunicação é composto pelos seguintes campos:
- * - STX (1 byte): Início da transmissão.
- * - QTD (1 byte): Quantidade de bytes de dados.
- * - DADOS (N bytes): Dados da mensagem.
- * - CHK (1 byte): Checksum dos dados.
- * - ETX (1 byte): Fim da transmissão.
- * 
- * A FSM é implementada utilizando uma enumeração para os estados e uma estrutura para armazenar o estado atual e os dados recebidos.
- * 
- * Estados da FSM:
- * - STATE_WAIT_STX: Aguardando o byte de início da transmissão (STX).
- * - STATE_READ_QTD: Lendo o byte que indica a quantidade de dados (QTD).
- * - STATE_READ_DATA: Lendo os bytes de dados.
- * - STATE_READ_CHK: Lendo o byte de checksum (CHK).
- * - STATE_WAIT_ETX: Aguardando o byte de fim da transmissão (ETX).
- * - STATE_COMPLETE: Transmissão completa.
- * - STATE_ERROR: Erro na transmissão.
- * 
- * Funções principais:
- * - fsm_init: Inicializa a FSM.
- * - fsm_process: Processa um byte de entrada e atualiza o estado da FSM.
- * - fsm_is_complete: Verifica se a transmissão foi completada com sucesso.
- * - fsm_is_error: Verifica se ocorreu um erro na transmissão.
- * 
- * Função de teste:
- * - test_fsm: Testa a FSM com uma mensagem de exemplo.
- * 
- */
-
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
+#include <time.h>
+#include "pt-1.4/pt.h"
 
-typedef enum {
-    STATE_WAIT_STX,
-    STATE_READ_QTD,
-    STATE_READ_DATA,
-    STATE_READ_CHK,
-    STATE_WAIT_ETX,
-    STATE_COMPLETE,
-    STATE_ERROR
-} State;
+#define TIMEOUT 5    // Tempo máximo de espera em segundos
+#define DATA_SIZE 10 // Tamanho dos dados a serem enviados
 
-typedef struct {
-    State current_state;
-    uint8_t qtd;
-    uint8_t data[256];
-    uint8_t chk;
-    uint8_t data_index;
-} FSM;
+// Definição da macro PT_SLEEP
+#define PT_SLEEP(pt, seconds)                                     \
+    do {                                                          \
+        static time_t sleep_start;                                \
+        sleep_start = time(NULL);                                 \
+        PT_WAIT_UNTIL(pt, time(NULL) - sleep_start >= (seconds)); \
+    } while (0)
 
-void fsm_init(FSM *fsm) {
-    fsm->current_state = STATE_WAIT_STX;
-    fsm->qtd = 0;
-    fsm->chk = 0;
-    fsm->data_index = 0;
-}
+static struct pt pt_sender, pt_receiver;
+static int data_buffer[DATA_SIZE];
+static int ack_flag = 0;
 
-bool fsm_process(FSM *fsm, uint8_t byte) {
-    switch (fsm->current_state) {
-        case STATE_WAIT_STX:
-            if (byte == 0x02) { // STX
-                fsm->current_state = STATE_READ_QTD;
-            }
-            break;
-        case STATE_READ_QTD:
-            fsm->qtd = byte;
-            fsm->current_state = STATE_READ_DATA;
-            break;
-        case STATE_READ_DATA:
-            fsm->data[fsm->data_index++] = byte;
-            if (fsm->data_index == fsm->qtd) {
-                fsm->current_state = STATE_READ_CHK;
-            }
-            break;
-        case STATE_READ_CHK:
-            fsm->chk = byte;
-            fsm->current_state = STATE_WAIT_ETX;
-            break;
-        case STATE_WAIT_ETX:
-            if (byte == 0x03) { // ETX
-                fsm->current_state = STATE_COMPLETE;
-                return true;
-            } else {
-                fsm->current_state = STATE_ERROR;
-            }
-            break;
-        case STATE_COMPLETE:
-        case STATE_ERROR:
-            break;
+// Protothread Sender
+static PT_THREAD(sender(struct pt *pt))
+{
+    static int index;
+    static int timeout_counter;
+
+    PT_BEGIN(pt);
+
+    // Preparar dados para envio
+    for (index = 0; index < DATA_SIZE; index++)
+    {
+        data_buffer[index] = index;
     }
-    return false;
+
+    printf("Transmissor: Enviando dados...\n");
+
+    // Enviar dados para o receptor (simulação)
+    ack_flag = 0; // Resetar o ACK
+
+    // Esperar pelo ACK ou timeout
+    timeout_counter = 0;
+    while (ack_flag == 0 && timeout_counter < TIMEOUT)
+    {
+        PT_SLEEP(pt, 1); // Espera de 1 segundo
+        timeout_counter++;
+    }
+
+    if (ack_flag)
+    {
+        printf("Transmissor: ACK recebido.\n");
+    }
+    else
+    {
+        printf("Transmissor: Timeout. Reenviando dados...\n");
+        // Reenviar dados
+    }
+
+    PT_END(pt);
 }
 
-bool fsm_is_complete(FSM *fsm) {
-    return fsm->current_state == STATE_COMPLETE;
-}
+// Protothread Receiver
+static PT_THREAD(receiver(struct pt *pt))
+{
+    static int index;
+    static int received_data[DATA_SIZE];
+    static int data_valid = 1;
 
-bool fsm_is_error(FSM *fsm) {
-    return fsm->current_state == STATE_ERROR;
-}
+    PT_BEGIN(pt);
 
-// Test function
-void test_fsm() {
-    FSM fsm;
-    fsm_init(&fsm);
+    // Simular recepção de dados
+    PT_SLEEP(pt, 2); // Simula o tempo de chegada dos dados
 
-    uint8_t message[] = {0x02, 0x03, 'A', 'B', 'C', 0x00, 0x03};
-    bool complete = false;
+    // Receber dados do transmissor
+    for (index = 0; index < DATA_SIZE; index++)
+    {
+        received_data[index] = data_buffer[index];
+    }
 
-    for (int i = 0; i < sizeof(message); i++) {
-        complete = fsm_process(&fsm, message[i]);
-        if (fsm_is_error(&fsm)) {
-            printf("FSM Error\n");
-            return;
+    // Verificar se os dados estão corretos
+    data_valid = 1;
+    for (index = 0; index < DATA_SIZE; index++)
+    {
+        if (received_data[index] != index)
+        {
+            data_valid = 0;
+            break;
         }
     }
 
-    if (complete && fsm_is_complete(&fsm)) {
-        printf("FSM Complete\n");
-        printf("QTD: %d\n", fsm.qtd);
-        printf("Data: ");
-        for (int i = 0; i < fsm.qtd; i++) {
-            printf("%c", fsm.data[i]);
-        }
-        printf("\nCHK: %d\n", fsm.chk);
-    } else {
-        printf("FSM Incomplete\n");
+    if (data_valid)
+    {
+        printf("Receptor: Dados corretos. Enviando ACK...\n");
+        ack_flag = 1; // Envia ACK
     }
+    else
+    {
+        printf("Receptor: Dados incorretos. Aguardando novos dados...\n");
+    }
+
+    PT_END(pt);
 }
 
-int main() {
-    test_fsm();
+// Função principal
+int main()
+{
+    PT_INIT(&pt_sender);
+    PT_INIT(&pt_receiver);
+
+    sender(&pt_sender);
+    receiver(&pt_receiver);
+
     return 0;
 }
